@@ -10,13 +10,13 @@ UPLOAD_FOLDER = 'db'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-# API endpoint to get item details
-API_BASE_URL = 'http://localhost:5000/items/'
+# API endpoint for items
+API_BASE_URL = 'http://localhost:5000/items'
 
 def get_item_details(item_id):
     """Fetch item details from the API based on item ID"""
     try:
-        response = requests.get(f"{API_BASE_URL}{item_id}")
+        response = requests.get(f"{API_BASE_URL}/{item_id}")
         if response.status_code == 200:
             return response.json()
         else:
@@ -24,37 +24,26 @@ def get_item_details(item_id):
     except requests.RequestException:
         return None
 
+def get_all_items():
+    """Function to get all available items from the API"""
+    try:
+        response = requests.get(API_BASE_URL)
+        if response.status_code == 200:
+            # Convert the list of items to a dictionary with item_id as key
+            items_list = response.json()
+            items_dict = {item['item_id']: item for item in items_list}
+            return items_dict
+        else:
+            return {}
+    except requests.RequestException:
+        return {}
+
 @app.route('/items/<int:item_id>', methods=['GET'])
 def get_items(item_id):
     """Mock API endpoint to return item details based on ID"""
-    # This is just for testing/demonstration
-    # In a real scenario, this would be your external API
-    items = {
-        1: {
-            "category": "Linux Errors",
-            "details": "Very rare solution",
-            "item_id": 1,
-            "name": "error-of-backup",
-            "static_resources": None,
-            "type": "txt"
-        },
-        2: {
-            "category": "Linux Errors",
-            "details": "It's very rare solution of rare problem.",
-            "item_id": 2,
-            "name": "error_of_linux",
-            "static_resources": None,
-            "type": "txt"
-        },
-        3: {
-            "category": "Linux Errors",
-            "details": "It's very rare solution of rare problem.",
-            "item_id": 3,
-            "name": "error_of_net_cat",
-            "static_resources": None,
-            "type": "video"
-        }
-    }
+    # In a real scenario, this would directly call the external API
+    # We'll keep it here for demonstration purposes
+    items = get_all_items()
     
     if item_id in items:
         return jsonify(items[item_id])
@@ -102,14 +91,55 @@ def upload_file(item_id):
 
 @app.route('/files', methods=['GET'])
 def list_files():
-    """List all uploaded files with their paths"""
+    """List all uploaded files with their paths and corresponding item_ids"""
     all_files = []
+    all_items = get_all_items()
+    
+    # Create a map for faster lookup based on category and type
+    category_type_map = {}
+    for item_id, item in all_items.items():
+        category = item.get('category')
+        file_type = item.get('type')
+        if category and file_type:
+            # Multiple items might have the same category and type
+            if (category, file_type) not in category_type_map:
+                category_type_map[(category, file_type)] = []
+            category_type_map[(category, file_type)].append(item_id)
     
     for root, dirs, files in os.walk(UPLOAD_FOLDER):
         for file in files:
             file_path = os.path.join(root, file)
             relative_path = os.path.relpath(file_path, UPLOAD_FOLDER)
-            all_files.append(relative_path)
+            
+            # Parse the path to find the category and type
+            path_parts = relative_path.split(os.sep)
+            if len(path_parts) >= 2:
+                category = path_parts[0]
+                file_type = path_parts[1]
+                
+                # Get all potential matching item IDs
+                matching_item_ids = category_type_map.get((category, file_type), [])
+                
+                # If multiple matches exist, we need a more specific rule
+                # For now, include all potential matches
+                if matching_item_ids:
+                    all_files.append({
+                        "path": relative_path,
+                        "possible_item_ids": matching_item_ids,
+                        # Use the first match as the primary item_id
+                        "item_id": matching_item_ids[0] if matching_item_ids else None
+                    })
+                else:
+                    all_files.append({
+                        "path": relative_path,
+                        "item_id": None
+                    })
+            else:
+                # For files that don't match the expected structure
+                all_files.append({
+                    "path": relative_path,
+                    "item_id": None
+                })
     
     return jsonify({
         "files": all_files,
