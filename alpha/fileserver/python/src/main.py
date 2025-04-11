@@ -2,6 +2,9 @@ from flask import Flask, request, jsonify
 import os
 import requests
 import json
+import re
+from datetime import datetime
+from difflib import SequenceMatcher
 
 app = Flask(__name__)
 
@@ -12,6 +15,7 @@ if not os.path.exists(UPLOAD_FOLDER):
 
 # API endpoint for items
 API_BASE_URL = 'http://localhost:5000/items'
+API_STATIC_URL = 'http://localhost:5000/items/static'
 
 def get_item_details(item_id):
     """Fetch item details from the API based on item ID"""
@@ -37,6 +41,96 @@ def get_all_items():
             return {}
     except requests.RequestException:
         return {}
+
+def get_all_static_resources():
+    """Function to get all static resources from the API"""
+    try:
+        response = requests.get(API_STATIC_URL)
+        if response.status_code == 200:
+            # Convert the list to a dictionary with item_id as key
+            static_list = response.json()
+            static_dict = {item['item_id']: item for item in static_list}
+            return static_dict
+        else:
+            return {}
+    except requests.RequestException:
+        return {}
+
+def calculate_filename_similarity(filename, item_name):
+    """Calculate similarity between filename and item name"""
+    # Remove file extension and convert to lowercase
+    filename_base = os.path.splitext(filename)[0].lower()
+    item_name_lower = item_name.lower()
+    
+    # Calculate similarity ratio
+    return SequenceMatcher(None, filename_base, item_name_lower).ratio()
+
+def predict_item_id(file_path, file_name, items_dict, static_resources):
+    """
+    Enhanced prediction of item_id based on multiple factors:
+    1. Check if file path matches any stored static resource paths
+    2. Match based on category, type, and name similarity
+    3. Use filename pattern matching if available
+    """
+    # First check if the file path is already registered in static resources
+    for item_id, resource in static_resources.items():
+        if resource.get('item_path') and file_path in resource['item_path']:
+            return item_id
+    
+    # Parse path components
+    path_parts = file_path.split(os.sep)
+    if len(path_parts) < 2:
+        return None
+    
+    category = path_parts[0]
+    file_type = path_parts[1]
+    
+    # Filter items by category and type
+    candidates = []
+    for item_id, item in items_dict.items():
+        if item.get('category') == category and item.get('type') == file_type:
+            # Calculate name similarity
+            similarity = calculate_filename_similarity(file_name, item.get('name', ''))
+            
+            # Extract item_id from filename if it matches pattern like "item_123" or "123_something"
+            id_in_filename = None
+            filename_base = os.path.splitext(file_name)[0]
+            
+            # Try to extract item_id from filename using common patterns
+            id_patterns = [
+                r'item[_-]?(\d+)',  # matches "item_123", "item-123", "item123"
+                r'(\d+)[_-]',        # matches "123_something", "123-something"
+                r'^(\d+)$'           # matches just the number itself
+            ]
+            
+            for pattern in id_patterns:
+                match = re.search(pattern, filename_base)
+                if match:
+                    try:
+                        id_in_filename = int(match.group(1))
+                        # If we found an ID that matches an actual item_id, give it high priority
+                        if id_in_filename == item_id:
+                            similarity += 0.5  # Boost similarity for ID match
+                    except ValueError:
+                        pass
+            
+            # Check item details for additional clues
+            details = item.get('details', '')
+            if details and isinstance(details, str):
+                # If details contain any portion of the filename or vice versa
+                if file_name.lower() in details.lower() or any(part.lower() in file_name.lower() for part in details.lower().split()):
+                    similarity += 0.3  # Boost for details match
+            
+            candidates.append((item_id, similarity))
+    
+    # Sort candidates by similarity score
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    
+    # Return the item_id with highest similarity if we have candidates
+    if candidates:
+        return candidates[0][0]
+    
+    return None
 
 @app.route('/items/<int:item_id>', methods=['GET'])
 def get_items(item_id):
@@ -82,6 +176,18 @@ def upload_file(item_id):
     file_path = os.path.join(dir_path, file.filename)
     file.save(file_path)
     
+    # Update static resource in the items API
+    relative_path = os.path.relpath(file_path, UPLOAD_FOLDER)
+    try:
+        # Record the file path in the static resources
+        static_resource = {
+            "item_path": relative_path
+        }
+        requests.put(f"{API_STATIC_URL}/update/{item_id}", json=static_resource)
+    except requests.RequestException as e:
+        # Log the error but continue since the file is already saved
+        print(f"Failed to update static resource: {e}")
+    
     return jsonify({
         "success": True,
         "message": f"File uploaded successfully for item {item_id}",
@@ -94,52 +200,29 @@ def list_files():
     """List all uploaded files with their paths and corresponding item_ids"""
     all_files = []
     all_items = get_all_items()
-    
-    # Create a map for faster lookup based on category and type
-    category_type_map = {}
-    for item_id, item in all_items.items():
-        category = item.get('category')
-        file_type = item.get('type')
-        if category and file_type:
-            # Multiple items might have the same category and type
-            if (category, file_type) not in category_type_map:
-                category_type_map[(category, file_type)] = []
-            category_type_map[(category, file_type)].append(item_id)
+    static_resources = get_all_static_resources()
     
     for root, dirs, files in os.walk(UPLOAD_FOLDER):
         for file in files:
             file_path = os.path.join(root, file)
             relative_path = os.path.relpath(file_path, UPLOAD_FOLDER)
             
-            # Parse the path to find the category and type
-            path_parts = relative_path.split(os.sep)
-            if len(path_parts) >= 2:
-                category = path_parts[0]
-                file_type = path_parts[1]
-                
-                # Get all potential matching item IDs
-                matching_item_ids = category_type_map.get((category, file_type), [])
-                
-                # If multiple matches exist, we need a more specific rule
-                # For now, include all potential matches
-                if matching_item_ids:
-                    all_files.append({
-                        "path": relative_path,
-                        "possible_item_ids": matching_item_ids,
-                        # Use the first match as the primary item_id
-                        "item_id": matching_item_ids[0] if matching_item_ids else None
-                    })
-                else:
-                    all_files.append({
-                        "path": relative_path,
-                        "item_id": None
-                    })
-            else:
-                # For files that don't match the expected structure
-                all_files.append({
-                    "path": relative_path,
-                    "item_id": None
-                })
+            # Use enhanced prediction to determine the item_id
+            item_id = predict_item_id(relative_path, file, all_items, static_resources)
+            
+            file_info = {
+                "path": relative_path,
+                "file_name": file,
+                "item_id": item_id
+            }
+            
+            # If we have a predicted item_id, add item details for reference
+            if item_id and item_id in all_items:
+                file_info["item_name"] = all_items[item_id].get('name')
+                file_info["category"] = all_items[item_id].get('category')
+                file_info["type"] = all_items[item_id].get('type')
+            
+            all_files.append(file_info)
     
     return jsonify({
         "files": all_files,
