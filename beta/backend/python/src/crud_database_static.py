@@ -4,7 +4,7 @@ import sqlite3
 DATABASE_STATIC_PATH = "database/database_static.db"
 
 
-def add_item_static(item_id, picture_url=None, download_url=None):
+def add_item_static(item_id, item_path=None):
     """
     Add static resources for an item to the 'item_static' table.
     """
@@ -13,10 +13,10 @@ def add_item_static(item_id, picture_url=None, download_url=None):
     try:
         cursor.execute(
             """
-            INSERT INTO item_static (item_id, picture_url, download_url)
-            VALUES (?, ?, ?)
+            INSERT INTO item_static (item_id, item_path)
+            VALUES (?, ?)
         """,
-            (item_id, picture_url, download_url),
+            (item_id, item_path),
         )
         conn.commit()
         return True
@@ -26,10 +26,10 @@ def add_item_static(item_id, picture_url=None, download_url=None):
             cursor.execute(
                 """
                 UPDATE item_static 
-                SET picture_url = ?, download_url = ? 
+                SET item_path = ?
                 WHERE item_id = ?
             """,
-                (picture_url, download_url, item_id),
+                (item_path, item_id),
             )
             conn.commit()
             return True
@@ -67,7 +67,7 @@ def get_all_items_static():
     return static_data
 
 
-def update_item_static(item_id, picture_url=None, download_url=None):
+def update_item_static(item_id, item_path=None):
     """
     Update static resources for an item by its ID.
     """
@@ -78,24 +78,19 @@ def update_item_static(item_id, picture_url=None, download_url=None):
         cursor.execute("SELECT 1 FROM item_static WHERE item_id = ?", (item_id,))
         if cursor.fetchone():
             # Update existing record
-            if picture_url is not None:
+            if item_path is not None:
                 cursor.execute(
-                    "UPDATE item_static SET picture_url = ? WHERE item_id = ?",
-                    (picture_url, item_id),
-                )
-            if download_url is not None:
-                cursor.execute(
-                    "UPDATE item_static SET download_url = ? WHERE item_id = ?",
-                    (download_url, item_id),
+                    "UPDATE item_static SET item_path = ? WHERE item_id = ?",
+                    (item_path, item_id),
                 )
         else:
             # Insert new record
             cursor.execute(
                 """
-                INSERT INTO item_static (item_id, picture_url, download_url)
-                VALUES (?, ?, ?)
+                INSERT INTO item_static (item_id, item_path)
+                VALUES (?, ?)
             """,
-                (item_id, picture_url, download_url),
+                (item_id, item_path),
             )
         conn.commit()
         return True
@@ -132,8 +127,7 @@ def create_static_table_if_not_exists():
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS item_static (
         item_id INTEGER PRIMARY KEY,
-        picture_url TEXT,
-        download_url TEXT,
+        item_path TEXT,
         FOREIGN KEY (item_id) REFERENCES items (item_id)
     )
     ''')
