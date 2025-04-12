@@ -5,6 +5,7 @@ import json
 import re
 from datetime import datetime
 from difflib import SequenceMatcher
+from serve import setup_file_serving
 
 app = Flask(__name__)
 
@@ -228,6 +229,9 @@ def list_files():
         "files": all_files,
         "total": len(all_files)
     })
+
+# Setup file serving routes
+setup_file_serving(app, UPLOAD_FOLDER)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=3000, debug=True)
