@@ -15,6 +15,7 @@ from crud_database_static import (
     get_all_items_static,
     create_static_table_if_not_exists
 )
+from auto_static import get_path_for_item
 
 
 def setup_routes(app):
@@ -163,3 +164,40 @@ def setup_routes(app):
         if delete_item_static(item_id):
             return jsonify({"message": "Static resources deleted successfully"}), 200
         return jsonify({"message": "Failed to delete static resources"}), 400
+        
+    # New route for automatic static content addition
+    @app.route('/items/static/auto/<int:item_id>', methods=['POST'])
+    def auto_add_static_route(item_id):
+        # Check if the item exists
+        item = get_item_by_id(item_id)
+        if not item:
+            return jsonify({"message": "Item not found"}), 404
+            
+        # Fetch the path from external API
+        path = get_path_for_item(item_id)
+        if not path:
+            return jsonify({"message": "No matching files found in external API for this item_id"}), 404
+            
+        # Check if static resource already exists for this item
+        existing_static = get_item_static(item_id)
+        
+        if existing_static:
+            # Update existing static resource
+            if update_item_static(item_id, path):
+                return jsonify({
+                    "message": "Static resources automatically updated successfully",
+                    "item_id": item_id,
+                    "item_path": path
+                }), 200
+            else:
+                return jsonify({"message": "Failed to update static resources"}), 400
+        else:
+            # Add new static resource
+            if add_item_static(item_id, path):
+                return jsonify({
+                    "message": "Static resources automatically added successfully",
+                    "item_id": item_id,
+                    "item_path": path
+                }), 201
+            else:
+                return jsonify({"message": "Failed to add static resources"}), 400
