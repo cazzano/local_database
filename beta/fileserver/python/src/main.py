@@ -18,6 +18,9 @@ if not os.path.exists(UPLOAD_FOLDER):
 API_BASE_URL = 'http://localhost:5000/items'
 API_STATIC_URL = 'http://localhost:5000/items/static'
 
+# URL prepath for file viewing
+FILE_VIEW_PREPATH = 'http://localhost:3000/files/view/'
+
 def get_item_details(item_id):
     """Fetch item details from the API based on item ID"""
     try:
@@ -75,8 +78,14 @@ def predict_item_id(file_path, file_name, items_dict, static_resources):
     """
     # First check if the file path is already registered in static resources
     for item_id, resource in static_resources.items():
-        if resource.get('item_path') and file_path in resource['item_path']:
-            return item_id
+        resource_path = resource.get('item_path')
+        if resource_path:
+            # Strip the prepath if it exists in the stored path
+            if resource_path.startswith(FILE_VIEW_PREPATH):
+                resource_path = resource_path[len(FILE_VIEW_PREPATH):]
+            
+            if file_path in resource_path:
+                return item_id
     
     # Parse path components
     path_parts = file_path.split(os.sep)
@@ -179,10 +188,14 @@ def upload_file(item_id):
     
     # Update static resource in the items API
     relative_path = os.path.relpath(file_path, UPLOAD_FOLDER)
+    
     try:
+        # Append prepath to the relative path
+        static_resource_path = f"{FILE_VIEW_PREPATH}{relative_path}"
+        
         # Record the file path in the static resources
         static_resource = {
-            "item_path": relative_path
+            "item_path": static_resource_path
         }
         requests.put(f"{API_STATIC_URL}/update/{item_id}", json=static_resource)
     except requests.RequestException as e:
@@ -193,6 +206,7 @@ def upload_file(item_id):
         "success": True,
         "message": f"File uploaded successfully for item {item_id}",
         "path": file_path,
+        "static_path": f"{FILE_VIEW_PREPATH}{relative_path}",
         "item_details": item_details
     })
 
@@ -228,6 +242,71 @@ def list_files():
     return jsonify({
         "files": all_files,
         "total": len(all_files)
+    })
+
+@app.route('/sync-static-resources', methods=['POST'])
+def sync_static_resources():
+    """
+    Synchronize all files with static resources, ensuring they all have the prepath
+    """
+    all_files = []
+    updated_count = 0
+    all_items = get_all_items()
+    static_resources = get_all_static_resources()
+    
+    for root, dirs, files in os.walk(UPLOAD_FOLDER):
+        for file in files:
+            file_path = os.path.join(root, file)
+            relative_path = os.path.relpath(file_path, UPLOAD_FOLDER)
+            
+            # Use enhanced prediction to determine the item_id
+            item_id = predict_item_id(relative_path, file, all_items, static_resources)
+            
+            if item_id:
+                # Append prepath to the relative path
+                static_resource_path = f"{FILE_VIEW_PREPATH}{relative_path}"
+                
+                try:
+                    # Update static resource with prepath
+                    static_resource = {
+                        "item_path": static_resource_path
+                    }
+                    response = requests.put(f"{API_STATIC_URL}/update/{item_id}", json=static_resource)
+                    
+                    if response.status_code == 200:
+                        updated_count += 1
+                        all_files.append({
+                            "path": relative_path,
+                            "item_id": item_id,
+                            "static_path": static_resource_path,
+                            "status": "updated"
+                        })
+                    else:
+                        all_files.append({
+                            "path": relative_path,
+                            "item_id": item_id,
+                            "status": "update_failed",
+                            "error": response.text
+                        })
+                except requests.RequestException as e:
+                    all_files.append({
+                        "path": relative_path,
+                        "item_id": item_id,
+                        "status": "error",
+                        "error": str(e)
+                    })
+            else:
+                all_files.append({
+                    "path": relative_path,
+                    "status": "no_item_id"
+                })
+    
+    return jsonify({
+        "success": True,
+        "message": f"Synchronized {updated_count} static resources with prepath",
+        "files": all_files,
+        "total": len(all_files),
+        "updated": updated_count
     })
 
 # Setup file serving routes
