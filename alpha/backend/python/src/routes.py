@@ -165,7 +165,7 @@ def setup_routes(app):
             return jsonify({"message": "Static resources deleted successfully"}), 200
         return jsonify({"message": "Failed to delete static resources"}), 400
         
-    # New route for automatic static content addition
+    # Updated route for automatic static content addition with prepath
     @app.route('/items/static/auto/<int:item_id>', methods=['POST'])
     def auto_add_static_route(item_id):
         # Check if the item exists
@@ -173,8 +173,9 @@ def setup_routes(app):
         if not item:
             return jsonify({"message": "Item not found"}), 404
             
-        # Fetch the path from external API
-        path = get_path_for_item(item_id)
+        # Fetch the path from external API with prepath already added
+        # The prepath http://localhost:3000/files/view/ will be added by get_path_for_item
+        path = get_path_for_item(item_id, add_prepath=True)
         if not path:
             return jsonify({"message": "No matching files found in external API for this item_id"}), 404
             

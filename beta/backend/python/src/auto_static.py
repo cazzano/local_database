@@ -19,12 +19,24 @@ def fetch_file_info_by_item_id(item_id):
         print(f"Exception when fetching file info: {str(e)}")
         return []
 
-def get_path_for_item(item_id):
+def get_path_for_item(item_id, add_prepath=True):
     """
     Get the file path for a specific item_id from the external API
+    
+    Parameters:
+    - item_id: The ID of the item to fetch
+    - add_prepath: If True, prepends "http://localhost:3000/files/view/" to the path
+    
+    Returns:
+    - The complete path with prepath if add_prepath is True, otherwise the original path
     """
     files = fetch_file_info_by_item_id(item_id)
     if files:
-        # Return the path of the first matching file
-        return files[0].get('path')
+        # Get the path of the first matching file
+        original_path = files[0].get('path')
+        
+        # Return the path with prepath if add_prepath is True
+        if add_prepath and original_path:
+            return f"http://localhost:3000/files/view/{original_path}"
+        return original_path
     return None
