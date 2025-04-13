@@ -6,6 +6,7 @@ import re
 from datetime import datetime
 from difflib import SequenceMatcher
 from serve import setup_file_serving
+from auto_rename import rename_file_based_on_item_details
 
 app = Flask(__name__)
 
@@ -182,12 +183,15 @@ def upload_file(item_id):
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
     
-    # Save the file
-    file_path = os.path.join(dir_path, file.filename)
-    file.save(file_path)
+    # Save the file with original name first
+    original_file_path = os.path.join(dir_path, file.filename)
+    file.save(original_file_path)
     
-    # Update static resource in the items API
-    relative_path = os.path.relpath(file_path, UPLOAD_FOLDER)
+    # Rename the file according to item details name
+    renamed_file_path = rename_file_based_on_item_details(original_file_path, item_details)
+    
+    # Get the new relative path after renaming
+    relative_path = os.path.relpath(renamed_file_path, UPLOAD_FOLDER)
     
     try:
         # Append prepath to the relative path
@@ -204,8 +208,10 @@ def upload_file(item_id):
     
     return jsonify({
         "success": True,
-        "message": f"File uploaded successfully for item {item_id}",
-        "path": file_path,
+        "message": f"File uploaded and renamed successfully for item {item_id}",
+        "original_filename": file.filename,
+        "new_filename": os.path.basename(renamed_file_path),
+        "path": renamed_file_path,
         "static_path": f"{FILE_VIEW_PREPATH}{relative_path}",
         "item_details": item_details
     })
