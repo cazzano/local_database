@@ -1,12 +1,16 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import os
 import requests
 import json
 import re
+import tarfile
+import shutil
+from io import BytesIO
 from datetime import datetime
 from difflib import SequenceMatcher
 from serve import setup_file_serving
 from auto_rename import rename_file_based_on_item_details
+from upload_folder import process_folder_upload
 
 app = Flask(__name__)
 
@@ -215,6 +219,202 @@ def upload_file(item_id):
         "static_path": f"{FILE_VIEW_PREPATH}{relative_path}",
         "item_details": item_details
     })
+
+@app.route('/upload-folder/<int:item_id>', methods=['POST'])
+def upload_folder(item_id):
+    """Upload a folder for a specific item ID"""
+    # Check if it's a ZIP upload
+    if 'zip_file' in request.files:
+        zip_file = request.files['zip_file']
+        if zip_file.filename == '':
+            return jsonify({"error": "No selected ZIP file"}), 400
+        
+        # Get item details from the API
+        item_details = get_item_details(item_id)
+        
+        # Process the folder upload
+        result, status_code = process_folder_upload(
+            {'zip_file': zip_file}, 
+            item_id, 
+            UPLOAD_FOLDER, 
+            item_details, 
+            API_STATIC_URL, 
+            FILE_VIEW_PREPATH
+        )
+        
+        return jsonify(result), status_code
+    
+    # Check if it's a directory upload with multiple files
+    elif request.files.getlist('folder_files'):
+        folder_files = request.files.getlist('folder_files')
+        if not folder_files or len(folder_files) == 0:
+            return jsonify({"error": "No folder files uploaded"}), 400
+        
+        # Get item details from the API
+        item_details = get_item_details(item_id)
+        
+        # Process the folder upload
+        result, status_code = process_folder_upload(
+            {'folder_files': folder_files}, 
+            item_id, 
+            UPLOAD_FOLDER, 
+            item_details, 
+            API_STATIC_URL, 
+            FILE_VIEW_PREPATH
+        )
+        
+        return jsonify(result), status_code
+    else:
+        return jsonify({"error": "No folder or ZIP file provided"}), 400
+
+@app.route('/upload-folder-direct/<int:item_id>', methods=['POST'])
+def upload_folder_direct(item_id):
+    """Upload a folder directly using curl with tar streaming"""
+    # Get item details from the API
+    item_details = get_item_details(item_id)
+    if not item_details:
+        return jsonify({"error": f"Could not get details for item ID: {item_id}"}), 404
+    
+    # Extract category and type from item details
+    category = item_details.get('category')
+    file_type = item_details.get('type')
+    
+    if not category or not file_type:
+        return jsonify({"error": "Invalid item details: missing category or type"}), 400
+    
+    # Create base directory structure
+    base_dir_path = os.path.join(UPLOAD_FOLDER, category, file_type)
+    if not os.path.exists(base_dir_path):
+        os.makedirs(base_dir_path)
+    
+    # Create a unique subfolder for this upload (using timestamp)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    item_name = item_details.get('name', '').replace(' ', '_').lower()
+    folder_name = f"{item_name}_{item_id}_{timestamp}"
+    folder_path = os.path.join(base_dir_path, folder_name)
+    os.makedirs(folder_path, exist_ok=True)
+    
+    try:
+        # Create a temporary directory to extract files first
+        temp_extract_dir = os.path.join(base_dir_path, f"temp_{timestamp}")
+        os.makedirs(temp_extract_dir, exist_ok=True)
+        
+        # Open tar stream from request data
+        tar_stream = BytesIO(request.data)
+        tar = tarfile.open(fileobj=tar_stream, mode='r|*')  # Auto-detect compression
+        
+        # Extract all files to temporary directory
+        tar.extractall(path=temp_extract_dir)
+        tar.close()
+        
+        # Find the actual target folder in the extracted content
+        # We assume the last directory in the path is the one we want to keep
+        # For example, from "/home/cazzano/starter", we want just "starter"
+        uploaded_files = []
+        source_folders = []
+        
+        # Scan the temp directory to find all top-level directories
+        for item in os.listdir(temp_extract_dir):
+            item_path = os.path.join(temp_extract_dir, item)
+            if os.path.isdir(item_path):
+                source_folders.append(item_path)
+        
+        # If we have exactly one top-level directory, assume it's the source folder
+        if len(source_folders) == 1:
+            source_dir = source_folders[0]
+            
+            # Now find the actual target folder by traversing the directory structure
+            current_dir = source_dir
+            found_target = False
+            
+            # Keep traversing until we find a directory with multiple files/subdirectories
+            # or reach a leaf directory
+            while not found_target:
+                contents = os.listdir(current_dir)
+                
+                # If there's only one subdirectory and no files, continue traversing
+                if len(contents) == 1:
+                    next_item = os.path.join(current_dir, contents[0])
+                    if os.path.isdir(next_item):
+                        current_dir = next_item
+                    else:
+                        # Hit a file, use the parent directory
+                        found_target = True
+                else:
+                    # Found a directory with multiple items or no items
+                    found_target = True
+            
+            # Move the contents of the final target directory to our destination
+            for item in os.listdir(current_dir):
+                src_path = os.path.join(current_dir, item)
+                dest_path = os.path.join(folder_path, item)
+                
+                if os.path.isdir(src_path):
+                    shutil.copytree(src_path, dest_path)
+                else:
+                    shutil.copy2(src_path, dest_path)
+        else:
+            # If we have multiple or no top-level directories, just copy everything
+            for item in os.listdir(temp_extract_dir):
+                src_path = os.path.join(temp_extract_dir, item)
+                dest_path = os.path.join(folder_path, item)
+                
+                if os.path.isdir(src_path):
+                    shutil.copytree(src_path, dest_path)
+                else:
+                    shutil.copy2(src_path, dest_path)
+        
+        # Clean up temporary directory
+        shutil.rmtree(temp_extract_dir)
+        
+        # Track uploaded files and update static resources
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                relative_path = os.path.relpath(file_path, UPLOAD_FOLDER)
+                
+                # Update static resource
+                try:
+                    static_resource_path = f"{FILE_VIEW_PREPATH}{relative_path}"
+                    static_resource = {
+                        "item_path": static_resource_path
+                    }
+                    response = requests.put(f"{API_STATIC_URL}/update/{item_id}", json=static_resource)
+                    success = response.status_code == 200
+                except requests.RequestException:
+                    success = False
+                
+                uploaded_files.append({
+                    "file_path": relative_path,
+                    "static_path": static_resource_path if success else None,
+                    "updated": success
+                })
+        
+        return jsonify({
+            "success": True,
+            "message": f"Folder uploaded successfully for item {item_id}",
+            "folder_path": os.path.relpath(folder_path, UPLOAD_FOLDER),
+            "files": uploaded_files,
+            "files_count": len(uploaded_files),
+            "item_details": item_details
+        })
+    
+    except Exception as e:
+        # Clean up temporary directory if it exists
+        temp_extract_dir = os.path.join(base_dir_path, f"temp_{timestamp}")
+        if os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir)
+            
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "message": "Failed to process uploaded folder"
+        }), 400
+
+@app.route('/upload-form/<int:item_id>', methods=['GET'])
+def upload_form(item_id):
+    """Render an HTML form for direct folder upload"""
+    return render_template('upload_form.html', item_id=item_id)
 
 @app.route('/files', methods=['GET'])
 def list_files():

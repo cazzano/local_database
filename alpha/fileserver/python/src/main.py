@@ -4,6 +4,7 @@ import requests
 import json
 import re
 import tarfile
+import shutil
 from io import BytesIO
 from datetime import datetime
 from difflib import SequenceMatcher
@@ -294,16 +295,79 @@ def upload_folder_direct(item_id):
     os.makedirs(folder_path, exist_ok=True)
     
     try:
+        # Create a temporary directory to extract files first
+        temp_extract_dir = os.path.join(base_dir_path, f"temp_{timestamp}")
+        os.makedirs(temp_extract_dir, exist_ok=True)
+        
         # Open tar stream from request data
         tar_stream = BytesIO(request.data)
         tar = tarfile.open(fileobj=tar_stream, mode='r|*')  # Auto-detect compression
         
-        # Extract all files
-        tar.extractall(path=folder_path)
+        # Extract all files to temporary directory
+        tar.extractall(path=temp_extract_dir)
         tar.close()
         
-        # Track uploaded files and update static resources
+        # Find the actual target folder in the extracted content
+        # We assume the last directory in the path is the one we want to keep
+        # For example, from "/home/cazzano/starter", we want just "starter"
         uploaded_files = []
+        source_folders = []
+        
+        # Scan the temp directory to find all top-level directories
+        for item in os.listdir(temp_extract_dir):
+            item_path = os.path.join(temp_extract_dir, item)
+            if os.path.isdir(item_path):
+                source_folders.append(item_path)
+        
+        # If we have exactly one top-level directory, assume it's the source folder
+        if len(source_folders) == 1:
+            source_dir = source_folders[0]
+            
+            # Now find the actual target folder by traversing the directory structure
+            current_dir = source_dir
+            found_target = False
+            
+            # Keep traversing until we find a directory with multiple files/subdirectories
+            # or reach a leaf directory
+            while not found_target:
+                contents = os.listdir(current_dir)
+                
+                # If there's only one subdirectory and no files, continue traversing
+                if len(contents) == 1:
+                    next_item = os.path.join(current_dir, contents[0])
+                    if os.path.isdir(next_item):
+                        current_dir = next_item
+                    else:
+                        # Hit a file, use the parent directory
+                        found_target = True
+                else:
+                    # Found a directory with multiple items or no items
+                    found_target = True
+            
+            # Move the contents of the final target directory to our destination
+            for item in os.listdir(current_dir):
+                src_path = os.path.join(current_dir, item)
+                dest_path = os.path.join(folder_path, item)
+                
+                if os.path.isdir(src_path):
+                    shutil.copytree(src_path, dest_path)
+                else:
+                    shutil.copy2(src_path, dest_path)
+        else:
+            # If we have multiple or no top-level directories, just copy everything
+            for item in os.listdir(temp_extract_dir):
+                src_path = os.path.join(temp_extract_dir, item)
+                dest_path = os.path.join(folder_path, item)
+                
+                if os.path.isdir(src_path):
+                    shutil.copytree(src_path, dest_path)
+                else:
+                    shutil.copy2(src_path, dest_path)
+        
+        # Clean up temporary directory
+        shutil.rmtree(temp_extract_dir)
+        
+        # Track uploaded files and update static resources
         for root, dirs, files in os.walk(folder_path):
             for file in files:
                 file_path = os.path.join(root, file)
@@ -336,6 +400,11 @@ def upload_folder_direct(item_id):
         })
     
     except Exception as e:
+        # Clean up temporary directory if it exists
+        temp_extract_dir = os.path.join(base_dir_path, f"temp_{timestamp}")
+        if os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir)
+            
         return jsonify({
             "success": False,
             "error": str(e),

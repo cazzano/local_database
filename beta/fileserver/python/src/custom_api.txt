@@ -1,0 +1,1 @@
+tar cf - ~/starter | curl -X POST -H "Content-Type: application/x-tar" --data-binary @- http://localhost:3000/upload-folder-direct/6
