@@ -1,4 +1,4 @@
-from flask import send_from_directory, abort
+from flask import send_from_directory, abort, Response
 import os
 import mimetypes
 import zipfile
@@ -47,6 +47,7 @@ def setup_file_serving(app, base_dir='db'):
     def view_file(file_path):
         """Serve a specific file for viewing in browser"""
         try:
+            # Properly handle the file path
             # Sanitize the path to prevent directory traversal attacks
             safe_path = os.path.normpath(file_path)
             if safe_path.startswith('..'):
@@ -56,14 +57,16 @@ def setup_file_serving(app, base_dir='db'):
             
             # Check if the file exists
             if not os.path.isfile(full_path):
-                abort(404)  # Not found
+                abort(404, f"File not found: {full_path}")  # Not found with details
                 
+            # Get the directory and filename separately
             directory = os.path.dirname(full_path)
             filename = os.path.basename(full_path)
             
             # Get the mime type for the file
             mime_type = get_mimetype(full_path)
             
+            # Use send_from_directory with absolute path
             return send_from_directory(
                 directory, 
                 filename, 
@@ -107,7 +110,6 @@ def setup_file_serving(app, base_dir='db'):
             folder_name = os.path.basename(full_path)
             zip_filename = f"{folder_name}.zip"
             
-            from flask import Response
             return Response(
                 memory_file.getvalue(),
                 mimetype='application/zip',
@@ -132,7 +134,7 @@ def setup_file_serving(app, base_dir='db'):
             
             # Check if the path exists
             if not os.path.exists(full_path):
-                abort(404)  # Not found
+                abort(404, f"Path not found: {full_path}")  # Not found with details
                 
             if os.path.isfile(full_path):
                 # If it's a file, redirect to view_file
